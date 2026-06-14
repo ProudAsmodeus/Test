@@ -12,21 +12,14 @@
 
 // --- AUDIO CONFIGURATION ---
 #define SAMPLE_RATE    44100
-#define BUFFER_FRAMES  64
-
-// INMP441/ICS-43434 mics output 24-bit audio in a 32-bit I2S slot.
-// If your mic L/R or SEL pin is wired for right channel, keep this at 1.
-// If you get no voice, change it to 0.
-#define MIC_CHANNEL_INDEX 1  // 0 = left slot, 1 = right slot
+#define BUFFER_SIZE    64
 
 // --- CLEANUP TUNING ---
-// Higher = less bass/rumble/hum, but too high makes voices thin.
+// This version intentionally keeps the same 16-bit I2S bus format as your
+// original working sketch. The filters process both stereo slots so it does
+// not matter whether the INMP441 L/R pin selects left or right.
 const float HPF_COEFF = 0.995f;
-
-// Lower = smoother/less hiss, higher = brighter/more natural.
-const float LOWPASS_ALPHA = 0.45f;
-
-// Start soft limiting before full-scale clipping to reduce harsh rattling.
+const float LOWPASS_ALPHA = 0.60f;
 const float LIMIT_START = 28000.0f;
 const float LIMIT_KNEE_GAIN = 0.20f;
 
@@ -40,9 +33,9 @@ volatile unsigned long lastDebounceTime = 0;
 const unsigned long debounceDelay = 250;
 
 // --- FILTER STATE ---
-float previousInput = 0.0f;
-float highPassState = 0.0f;
-float lowPassState = 0.0f;
+float previousInput[2] = {0.0f, 0.0f};
+float highPassState[2] = {0.0f, 0.0f};
+float lowPassState[2] = {0.0f, 0.0f};
 
 void IRAM_ATTR handleVolumeUp() {
   unsigned long currentTime = millis();
@@ -74,28 +67,21 @@ float softLimit(float sample) {
   return sample;
 }
 
-int16_t cleanVoiceSample(int32_t rawI2SSample, float gain) {
-  // 24-bit MEMS mic data is normally left-aligned inside the 32-bit word.
-  // Shifting by 16 converts it to a signed 16-bit working sample.
-  float input = (float)(rawI2SSample >> 16);
+int16_t cleanSample(int16_t rawSample, int channel, float gain) {
+  float input = (float)rawSample;
 
   // High-pass / DC blocker: removes DC offset, handling noise, and low rumble.
-  float highPassed = input - previousInput + HPF_COEFF * highPassState;
-  previousInput = input;
-  highPassState = highPassed;
+  float highPassed = input - previousInput[channel] + HPF_COEFF * highPassState[channel];
+  previousInput[channel] = input;
+  highPassState[channel] = highPassed;
 
   // Gentle low-pass: reduces hiss and sharp digital rattling.
-  lowPassState += LOWPASS_ALPHA * (highPassed - lowPassState);
+  lowPassState[channel] += LOWPASS_ALPHA * (highPassed - lowPassState[channel]);
 
-  float amplified = lowPassState * gain;
+  float amplified = lowPassState[channel] * gain;
   amplified = softLimit(amplified);
 
   return (int16_t)amplified;
-}
-
-int32_t sample16ToI2S32(int16_t sample) {
-  // Put the 16-bit cleaned output in the high bits for the I2S DAC.
-  return ((int32_t)sample) << 16;
 }
 
 void setup() {
@@ -110,11 +96,10 @@ void setup() {
   i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
   i2s_new_channel(&chan_cfg, &tx_chan, &rx_chan);
 
-  // 2. Configure 32-bit I2S.
-  // This is important for INMP441/ICS-43434 because they are 24-bit I2S mics.
+  // 2. Configure the same 16-bit I2S format as the original working sketch.
   i2s_std_config_t std_cfg = {
     .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(SAMPLE_RATE),
-    .slot_cfg = I2S_STD_MSB_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO),
+    .slot_cfg = I2S_STD_MSB_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
     .gpio_cfg = {
       .mclk = I2S_GPIO_UNUSED,
       .bclk = (gpio_num_t)I2S_BCLK_PIN,
@@ -132,33 +117,25 @@ void setup() {
   i2s_channel_enable(tx_chan);
   i2s_channel_enable(rx_chan);
 
-  Serial.println("Hearing Booster System Online - INMP441/UDA1334A Cleaner Version");
-  Serial.println("If there is rattling but no voice, change MIC_CHANNEL_INDEX between 1 and 0.");
+  Serial.println("Hearing Booster System Online - Cleaner 16-bit Bus Version");
 }
 
 void loop() {
-  int32_t audioBuffer[BUFFER_FRAMES * 2]; // Stereo buffer: left/right interleaved
+  int16_t audioBuffer[BUFFER_SIZE * 2]; // Stereo buffer: left/right interleaved
   size_t bytesRead = 0;
   size_t bytesWritten = 0;
 
   i2s_channel_read(rx_chan, audioBuffer, sizeof(audioBuffer), &bytesRead, portMAX_DELAY);
 
   float gain = volumeLevel * 0.2f;
-  int framesToProcess = bytesRead / (sizeof(int32_t) * 2);
+  int samplesToProcess = bytesRead / sizeof(int16_t);
 
-  for (int frame = 0; frame < framesToProcess; frame++) {
-    int micIndex = frame * 2 + MIC_CHANNEL_INDEX;
-
-    int16_t cleanedSample = cleanVoiceSample(audioBuffer[micIndex], gain);
-    int32_t outputSample = sample16ToI2S32(cleanedSample);
-
-    // Send the selected mic as clean mono to both DAC/headphone channels.
-    audioBuffer[frame * 2] = outputSample;
-    audioBuffer[frame * 2 + 1] = outputSample;
+  for (int i = 0; i < samplesToProcess; i++) {
+    int channel = i % 2;
+    audioBuffer[i] = cleanSample(audioBuffer[i], channel, gain);
   }
 
-  size_t bytesToWrite = framesToProcess * 2 * sizeof(int32_t);
-  i2s_channel_write(tx_chan, audioBuffer, bytesToWrite, &bytesWritten, portMAX_DELAY);
+  i2s_channel_write(tx_chan, audioBuffer, bytesRead, &bytesWritten, portMAX_DELAY);
 
   static int lastPrintedVolume = -1;
   if (volumeLevel != lastPrintedVolume) {

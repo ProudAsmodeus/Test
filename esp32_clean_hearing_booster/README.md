@@ -1,23 +1,20 @@
 # ESP32 Clean Hearing Booster
 
 This sketch is based on the provided ESP32 I2S mic-to-DAC loop for an
-INMP441/ICS-43434 I2S MEMS mic and UDA1334A I2S DAC. It keeps the working
-44.1 kHz setup, but uses 32-bit I2S slots because these MEMS mics output
-24-bit audio inside a 32-bit word.
+INMP441/ICS-43434 I2S MEMS mic and UDA1334A I2S DAC. It intentionally keeps
+the same 44.1 kHz / 16-bit shared I2S bus format as the original working
+sketch, then adds light cleanup in the sample loop.
 
 The cleanup chain:
 
-1. Select the real I2S mic slot with `MIC_CHANNEL_INDEX`.
-2. Convert the 24-bit mic data to a signed 16-bit working sample.
-3. Copy the cleaned mono signal to both DAC/headphone channels.
-4. Remove DC and low-frequency rumble with a high-pass filter.
-5. Smooth high-frequency hiss with a gentle low-pass filter.
-6. Prevent loud rattling with a soft limiter.
+1. Process both interleaved stereo slots so it does not matter whether the
+   INMP441 L/R pin is tied high or low.
+2. Remove DC and low-frequency rumble with a high-pass filter.
+3. Smooth high-frequency hiss with a gentle low-pass filter.
+4. Prevent loud rattling with a soft limiter instead of harsh clipping.
 
 ## First things to tune
 
-- The sketch defaults to `MIC_CHANNEL_INDEX 1` for a right-slot mic. If there
-  is rattling but no voice, change it to `0`.
 - If the output is too dull, raise `LOWPASS_ALPHA` a little, for example `0.55`.
 - If the output still rattles, lower `LIMIT_START`, for example `24000.0f`.
 - Keep `SAMPLE_RATE` at `44100` while debugging because this matches the
