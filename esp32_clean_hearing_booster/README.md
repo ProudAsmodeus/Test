@@ -1,24 +1,36 @@
 # ESP32 Clean Hearing Booster
 
-This sketch is based on the provided ESP32 I2S mic-to-DAC loop for an
-INMP441/ICS-43434 I2S MEMS mic and UDA1334A I2S DAC. It intentionally keeps
-the same 44.1 kHz / 16-bit shared I2S bus format as the original working
-sketch, then adds light cleanup in the sample loop.
+This sketch is based on the ESP32 I2S mic-to-DAC loop for two INMP441/ICS-43434
+I2S MEMS mics and a UDA1334A I2S DAC.
+
+Wiring:
+
+- Both mic SD/DOUT pins share `MIC_SD_PIN`.
+- Both mic BCLK/SCK pins share `I2S_BCLK_PIN`.
+- Both mic WS/LRCLK pins share `I2S_WS_PIN`.
+- Left mic L/R pin goes to GND.
+- Right mic L/R pin goes to 3.3 V.
 
 The cleanup chain:
 
-1. Process both interleaved stereo slots so it does not matter whether the
-   INMP441 L/R pin is tied high or low.
-2. Remove DC and low-frequency rumble with a high-pass filter.
-3. Smooth high-frequency hiss with a gentle low-pass filter.
-4. Prevent loud rattling with a soft limiter instead of harsh clipping.
+1. Voice high-pass filter to remove rumble and handling noise.
+2. Voice low-pass filter to reduce hiss and distracting sharp noise.
+3. Presence boost around speech consonants for clarity.
+4. Mid/side focus to reduce side-heavy distractions.
+5. Adaptive noise expander that lowers steady background sound without fully
+   muting quiet speech.
+6. AGC to lift quiet speech.
+7. Compressor and soft limiter to protect against painful loud sounds and DAC
+   clipping.
 
 ## First things to tune
 
-- If the output is too dull, raise `LOWPASS_ALPHA` a little, for example `0.55`.
-- If the output still rattles, lower `LIMIT_START`, for example `24000.0f`.
-- Keep `SAMPLE_RATE` at `44100` while debugging because this matches the
-  original working code.
+- If left/right sound swapped, set `SWAP_MIC_CHANNELS` to `1`.
+- If voice sounds too narrow/mono, raise `SIDE_KEEP`.
+- If surrounding distractions are still too strong, lower `SIDE_KEEP`.
+- If quiet speech is not loud enough, raise `TARGET_SPEECH_LEVEL` slightly.
+- If room noise pumps or gets too loud, lower `MAX_AGC_GAIN`.
+- If output still rattles, lower `LIMIT_START`, for example `24000.0f`.
 
 ## Hardware noise checks
 
